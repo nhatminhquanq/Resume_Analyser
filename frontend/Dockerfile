@@ -8,7 +8,7 @@ WORKDIR /app
 # Copy file package.json và package-lock.json trước
 # để Docker cache lại node_modules (tương tự pom.xml ở backend)
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm install --legacy-peer-deps
 
 # Copy toàn bộ mã nguồn frontend
 COPY . .
