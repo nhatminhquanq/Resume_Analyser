@@ -8,7 +8,7 @@ services:
 
   # --- Backend (Spring Boot API) ---
   backend:
-    image: ${BACKEND_IMAGE:-antony1552006/resume-backend}:${VERSION:-latest}
+    image: ${BACKEND_IMAGE:-nhatminhquanq/resume-backend}:${VERSION:-latest}
     container_name: resume-backend
     ports:
       - "8081:8080"
@@ -23,7 +23,7 @@ services:
 
   # --- Frontend (React + Nginx) ---
   frontend:
-    image: ${FRONTEND_IMAGE:-antony1552006/resume-frontend}:${VERSION:-latest}
+    image: ${FRONTEND_IMAGE:-nhatminhquanq/resume-frontend}:${VERSION:-latest}
     container_name: resume-frontend
     ports:
       - "3000:80"

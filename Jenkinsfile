@@ -84,7 +84,7 @@ pipeline {
                 echo "=== BƯỚC 5: ĐÓNG GÓI VÀ ĐẨY IMAGES LÊN DOCKER HUB ==="
                 script {
                     // Sử dụng đúng credential dockerhub-credentials của bạn
-                    withDockerRegistry(credentialsId: 'dockerhub-credentials', toolName: 'docker') {
+                    withDockerRegistry(credentialsId: 'registry-credentials', toolName: 'docker') {
                         // 1. Build & Push Frontend Image
                         echo "Đang build & push Frontend Image..."
                         dir('frontend') {
