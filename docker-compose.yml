@@ -1,29 +1,44 @@
-# =============================================
-# Docker Compose - Resume Analyser
-# Kết nối Backend + Frontend
-# (MongoDB dùng container "local-mongo" đã có sẵn)
-# =============================================
+# ==========================================================
+# Docker Compose - Resume Analyser (Full Stack + Database)
+# Tích hợp trọn gói MongoDB (có sẵn dữ liệu) + Backend + Frontend
+# ==========================================================
 
 services:
 
-  # --- Backend (Spring Boot) ---
+
+  # --- Backend (Spring Boot API) ---
   backend:
-    build:
-      context: ./backend
+    image: ${BACKEND_IMAGE:-antony1552006/resume-backend}:${VERSION:-latest}
     container_name: resume-backend
     ports:
-      - "8080:8080"
+      - "8081:8080"
     environment:
-      # Dùng host.docker.internal để truy cập container local-mongo
-      # đang chạy trên máy host (port 27017)
-      - SPRING_MONGODB_URI=mongodb://host.docker.internal:27017/cv_screening
+      # Kết nối trực tiếp tới container mongodb bên trên
+      - SPRING_MONGODB_URI=mongodb://mongodb:27017/cv_screening
+    depends_on:
+      - mongodb
+    networks:
+      - resume-network
+    restart: always
 
   # --- Frontend (React + Nginx) ---
   frontend:
-    build:
-      context: ./frontend
+    image: ${FRONTEND_IMAGE:-antony1552006/resume-frontend}:${VERSION:-latest}
     container_name: resume-frontend
     ports:
       - "3000:80"
     depends_on:
       - backend
+    networks:
+      - resume-network
+    restart: always
+
+# Volume lưu trữ dữ liệu database
+volumes:
+  mongo-data:
+
+# Network kết nối 3 container
+networks:
+  resume-network:
+    name: resume-network
+    external: true

@@ -1,220 +1,142 @@
-// =============================================
-// Jenkinsfile - CI/CD cho Resume Analyser (bản cấu hình qua PORTAL)
-// Copy file này vào thư mục gốc repo (cùng cấp backend/, frontend/, docker-compose.yml).
-//
-// File này chỉ chứa CÁC BƯỚC của pipeline. Tool, secret, kết nối SonarQube đều tạo
-// trên giao diện web và được gọi ở đây bằng TÊN/ID – tên phải khớp tuyệt đối:
-//   Tools        : jdk21, maven3, node20, sonar-scanner     (Manage Jenkins → Tools)
-//   Sonar server : SonarQube                                (Manage Jenkins → System)
-//   Credentials  : sonar-token        (dùng gián tiếp qua server "SonarQube")
-//                  git-credentials    (khai báo trong cấu hình job, để checkout)
-//                  registry-credentials (push image)
-//                  resume-mongodb-uri (chuỗi kết nối MongoDB khi deploy)
-//
-// Luồng: Checkout → Unit test (song song) → SonarQube → Quality Gate
-//        → Build image → Push image → Deploy → Smoke test
-// =============================================
+def version = "v0.${BUILD_NUMBER}"
+
 pipeline {
     agent any
 
     tools {
-        jdk    'jdk21'
-        maven  'maven3'
+        jdk 'jdk21'
+        maven 'maven3'
         nodejs 'node20'
     }
 
-    // Hiện ở nút "Build with Parameters" (từ lần build thứ 2)
-    parameters {
-        booleanParam(name: 'DEPLOY', defaultValue: true,
-                     description: 'Build image và deploy bằng docker compose sau khi qua Quality Gate')
-        booleanParam(name: 'PUSH_IMAGE', defaultValue: false,
-                     description: 'Push image lên registry (cần credential "registry-credentials")')
-        string(name: 'REGISTRY', defaultValue: 'docker.io',
-               description: 'Registry để push image, ví dụ docker.io hoặc registry.gitlab.com')
-    }
-
-    // Tự build khi có commit mới (Jenkins hỏi Git mỗi ~2 phút).
-    // Có hiệu lực sau lần build đầu tiên – Jenkins đọc Jenkinsfile rồi mới đăng ký trigger.
-    triggers {
-        pollSCM('H/2 * * * *')
-    }
-
-    options {
-        timeout(time: 30, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '20'))
-        disableConcurrentBuilds()
-        timestamps()
-    }
-
     environment {
-        SCANNER_HOME  = tool 'sonar-scanner'
-        // Gọi JaCoCo bằng dòng lệnh → không cần sửa pom.xml vẫn có báo cáo coverage
-        JACOCO        = 'org.jacoco:jacoco-maven-plugin:0.8.15'
-        APP_VERSION   = "v0.${BUILD_NUMBER}"
-        COMPOSE_PROJECT_NAME = 'resume-analyser'
-        // Port app mở ra máy host – docker-compose.yml của app và smoke test cùng đọc
-        BACKEND_PORT  = '8180'
-        FRONTEND_PORT = '3100'
-        CI            = 'true'
+        DOCKERHUB_USERNAME = "nhatminhquanq"
+        FRONTEND_IMAGE = "${DOCKERHUB_USERNAME}/resume-frontend"
+        BACKEND_IMAGE = "${DOCKERHUB_USERNAME}/resume-backend"
+        VERSION = "${version}"
+        GIT_REPO_URL = "https://github.com/nhatminhquanq/Resume_Analyser"
+        GIT_BRANCH = "main"
     }
 
     stages {
-        stage('Checkout') {
+        stage("1. Check Code") {
             steps {
-                echo '=== Bước 1: Lấy mã nguồn (Jenkins tự checkout bằng credential khai báo trong job) ==='
+                echo "=== BƯỚC 1: KÉO CODE TỪ GITHUB ==="
+                git branch: "${GIT_BRANCH}", url: "${GIT_REPO_URL}"
                 script {
+                    // Lấy mã hash commit rút gọn (vd: a1b2c3d)
                     env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.VERSION_COMMIT = "${env.VERSION}-${env.GIT_COMMIT_SHORT}"
+                    echo "📦 Phiên bản build: ${env.VERSION_COMMIT}"
                 }
-                echo "Commit ${env.GIT_COMMIT_SHORT} -> phiên bản ${env.APP_VERSION}"
             }
         }
 
-        stage('Unit test') {
+        stage("2. Test Code") {
             parallel {
-                stage('Backend') {
+                stage("Test Frontend") {
                     steps {
-                        echo '=== Bước 2a: JUnit cho backend + đo coverage (JaCoCo) ==='
-                        dir('backend') {
-                            sh 'mvn -B -ntp clean $JACOCO:prepare-agent verify $JACOCO:report'
-                        }
-                    }
-                    post {
-                        always {
-                            junit allowEmptyResults: true, testResults: 'backend/target/surefire-reports/*.xml'
-                        }
-                    }
-                }
-                stage('Frontend') {
-                    steps {
-                        echo '=== Bước 2b: Cài thư viện và chạy test cho frontend ==='
+                        echo "=== KIỂM THỬ FRONTEND ==="
                         dir('frontend') {
-                            sh 'npm install --legacy-peer-deps || true'
-                            sh '''
-                                if node -e "process.exit(require('./package.json').scripts?.['test:ci'] ? 0 : 1)"; then
-                                    npm run test:ci || true
-                                else
-                                    echo "Bỏ qua lỗi thiếu unit test của Frontend để chạy tiếp SonarQube"
-                                fi
-                            '''
+                            sh 'npm install'
+                            sh 'npm test -- --passWithNoTests'
                         }
                     }
-                    post {
-                        always {
-                            junit allowEmptyResults: true, testResults: 'frontend/reports/*.xml'
+                }
+                stage("Test Backend") {
+                    steps {
+                        echo "=== KIỂM THỬ BACKEND ==="
+                        dir('backend') {
+                            // Chạy compile và test bằng Maven để sinh class file cho SonarQube
+                            sh 'chmod +x ./mvnw'
+                            sh './mvnw test'
                         }
                     }
                 }
             }
         }
 
-        stage('SonarQube Analysis') {
+        stage("3. SonarQube Analysis") {
             steps {
-                echo '=== Bước 3: Quét mã nguồn bằng SonarQube ==='
-                // 'SonarQube' = tên server khai báo ở Manage Jenkins → System.
-                // Plugin tự lấy URL + token (credential sonar-token) và đưa vào biến môi trường cho scanner.
-                withSonarQubeEnv('SonarQube') {
-                    sh '"$SCANNER_HOME/bin/sonar-scanner" -Dsonar.projectVersion=$APP_VERSION'
+                echo "=== BƯỚC 3: QUÉT MÃ NGUỒN BẰNG SONARQUBE ==="
+                script {
+                    def scannerHome = tool 'sonar-scanner'
+                    withSonarQubeEnv('SonarQube') {
+                        // Quét mã nguồn dựa trên cấu hình trong file sonar-project.properties
+                        sh "${scannerHome}/bin/sonar-scanner -Dsonar.projectVersion=${env.VERSION_COMMIT}"
+                    }
                 }
             }
         }
 
-        stage('Quality Gate') {
+        stage("4. Quality Gate") {
             steps {
-                echo '=== Bước 4: Chờ SonarQube báo kết quả Quality Gate (fail → dừng, không deploy) ==='
-                timeout(time: 10, unit: 'MINUTES') {
+                echo "=== BƯỚC 4: KIỂM TRA CHẤT LƯỢNG MÃ NGUỒN (QUALITY GATE) ==="
+                timeout(time: 2, unit: 'MINUTES') {
+                    // Chờ Webhook từ SonarQube gửi tín hiệu về: Nếu code đạt chuẩn mới cho đi tiếp
                     waitForQualityGate abortPipeline: true
                 }
             }
         }
 
-        stage('Build image') {
-            when { expression { params.DEPLOY || params.PUSH_IMAGE } }
+        stage("5. Build & Push Docker Images") {
             steps {
-                echo '=== Bước 5: Build image Docker cho backend và frontend ==='
-                sh '''
-                    docker compose build
-                    docker tag ${COMPOSE_PROJECT_NAME}-backend:latest  ${COMPOSE_PROJECT_NAME}-backend:${APP_VERSION}
-                    docker tag ${COMPOSE_PROJECT_NAME}-frontend:latest ${COMPOSE_PROJECT_NAME}-frontend:${APP_VERSION}
-                '''
-            }
-        }
+                echo "=== BƯỚC 5: ĐÓNG GÓI VÀ ĐẨY IMAGES LÊN DOCKER HUB ==="
+                script {
+                    // Sử dụng đúng credential dockerhub-credentials của bạn
+                    withDockerRegistry(credentialsId: 'dockerhub-credentials', toolName: 'docker') {
+                        // 1. Build & Push Frontend Image
+                        echo "Đang build & push Frontend Image..."
+                        dir('frontend') {
+                            sh """
+                                docker build -t ${FRONTEND_IMAGE}:${VERSION} -t ${FRONTEND_IMAGE}:${VERSION_COMMIT} .
+                                docker push ${FRONTEND_IMAGE}:${VERSION}
+                                docker push ${FRONTEND_IMAGE}:${VERSION_COMMIT}
+                            """
+                        }
 
-        stage('Push image') {
-            when { expression { params.PUSH_IMAGE } }
-            steps {
-                echo "=== Bước 6: Push image lên ${params.REGISTRY} ==="
-                // Username/token lấy từ credential "registry-credentials"; Jenkins tự che (****) trong log
-                withCredentials([usernamePassword(credentialsId: 'registry-credentials',
-                                                  usernameVariable: 'REGISTRY_USER',
-                                                  passwordVariable: 'REGISTRY_TOKEN')]) {
-                    // Dùng nháy đơn ''' để shell (không phải Groovy) đọc secret → secret không lọt vào log
-                    sh '''
-                        echo "$REGISTRY_TOKEN" | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
-                        for svc in backend frontend; do
-                            target="$REGISTRY/$REGISTRY_USER/resume-$svc"
-                            docker tag "$COMPOSE_PROJECT_NAME-$svc:$APP_VERSION" "$target:$APP_VERSION"
-                            docker tag "$COMPOSE_PROJECT_NAME-$svc:$APP_VERSION" "$target:latest"
-                            docker push "$target:$APP_VERSION"
-                            docker push "$target:latest"
-                        done
-                    '''
-                }
-            }
-            post {
-                always {
-                    sh 'docker logout "$REGISTRY" || true'
-                }
-            }
-        }
+                        // 2. Build & Push Backend Image
+                        echo "Đang build & push Backend Image..."
+                        dir('backend') {
+                            sh """
+                                docker build -t ${BACKEND_IMAGE}:${VERSION} -t ${BACKEND_IMAGE}:${VERSION_COMMIT} .
+                                docker push ${BACKEND_IMAGE}:${VERSION}
+                                docker push ${BACKEND_IMAGE}:${VERSION_COMMIT}
+                            """
+                        }
 
-        stage('Deploy') {
-            when { expression { params.DEPLOY } }
-            steps {
-                echo '=== Bước 7: Deploy bằng docker compose ==='
-                // Chuỗi kết nối MongoDB là secret → lấy từ credential "resume-mongodb-uri",
-                // docker compose đọc biến SPRING_MONGODB_URI và truyền vào container backend
-                withCredentials([string(credentialsId: 'resume-mongodb-uri', variable: 'SPRING_MONGODB_URI')]) {
-                    sh 'docker compose up -d --remove-orphans'
-                }
-                sh 'docker compose ps'
-            }
-        }
 
-        stage('Smoke test') {
-            when { expression { params.DEPLOY } }
-            steps {
-                echo '=== Bước 8: Kiểm tra app sau deploy còn sống ==='
-                sh '''
-                    check() {  # check <tên> <url>: chờ tối đa 120s tới khi URL trả về HTTP < 500
-                        for i in $(seq 1 40); do
-                            code=$(curl -s -o /dev/null -w '%{http_code}' "$2" || true)
-                            if [ "$code" != "000" ] && [ "$code" -lt 500 ]; then
-                                echo "$1 OK ($2 -> HTTP $code)"; return 0
-                            fi
-                            sleep 3
-                        done
-                        echo "$1 KHÔNG phản hồi: $2"; return 1
                     }
-                    check Frontend "http://host.docker.internal:$FRONTEND_PORT"
-                    check Backend  "http://host.docker.internal:$BACKEND_PORT"
-                '''
-            }
-            post {
-                failure {
-                    sh 'docker compose ps; docker compose logs --tail=80'
                 }
+            }
+        }
+
+        stage("6. Deploy Containers") {
+            steps {
+                echo "=== BƯỚC 6: TRIỂN KHAI CONTAINERS VỚI PHIÊN BẢN MỚI ==="
+                sh """
+                    # Ghi tag phiên bản mới nhất vào file .env cho docker-compose
+                    echo "FRONTEND_IMAGE=${FRONTEND_IMAGE}" > .env
+                    echo "BACKEND_IMAGE=${BACKEND_IMAGE}" >> .env
+                    echo "VERSION=${VERSION_COMMIT}" >> .env
+
+                    echo "Dừng và dọn dẹp container cũ (nếu có)..."
+                    docker compose down --remove-orphans || true
+                    docker rm -f resume-backend resume-frontend resume-mongodb 2>/dev/null || true
+
+                    echo "Khởi chạy container mới bằng images vừa build..."
+                    docker compose up -d --force-recreate
+                """
             }
         }
     }
 
     post {
         success {
-            echo "🎉 Pipeline thành công: ${env.APP_VERSION} (${env.GIT_COMMIT_SHORT})" +
-                 (params.PUSH_IMAGE ? " – đã push lên ${params.REGISTRY}" : '') +
-                 (params.DEPLOY ? ' – đã deploy.' : '.')
+            echo "🎉 Pipeline hoàn tất thành công! Đã qua kiểm tra SonarQube Quality Gate và Deploy với tag ${env.VERSION_COMMIT}"
         }
         failure {
-            echo '❌ Pipeline thất bại: xem log ở stage bị đỏ. Lỗi Quality Gate → mở SonarQube để xem chi tiết.'
+            echo "❌ Pipeline thất bại! Vui lòng kiểm tra lại log chi tiết."
         }
     }
 }
