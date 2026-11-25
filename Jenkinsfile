@@ -125,7 +125,7 @@ pipeline {
                     docker rm -f resume-backend resume-frontend resume-mongodb 2>/dev/null || true
 
                     echo "Khởi chạy container mới bằng images vừa build..."
-                    docker compose up -d --force-recreate
+                    docker compose up -d --build --force-recreate
                 """
             }
         }
