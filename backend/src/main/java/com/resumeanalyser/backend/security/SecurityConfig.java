@@ -59,12 +59,10 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         // Không để security che lỗi gốc của controller thành 401/403.
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
-                        .requestMatchers(HttpMethod.POST,
-                                "/api/auth/login",
-                                "/api/auth/register")
-                        .permitAll()
+                        // cho phep Prometheus đọc metrics mà không cần JWT
+                        .requestMatchers("/actuator/**").permitAll()
+                        .requestMatchers(HttpMethod.POST,"/api/auth/login","/api/auth/register").permitAll()
                         .anyRequest().authenticated())
-
                 // Cho JWT filter chạy trước filter login mặc định
                 .addFilterBefore(
                         jwtAuthenticationFilter,
