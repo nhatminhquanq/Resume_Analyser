@@ -1,4 +1,4 @@
-(Lưu ý nhỏ trước khi bấm Build Now: Đảm bảo trong PowerShell bạn đã chạy docker network create resume-network để bước 6 Deploy bật cả Backend, Frontend, Prometheus và Grafana lên không bị vướng lỗi thiếu network).# ==========================================================
+#(Lưu ý nhỏ trước khi bấm Build Now: Đảm bảo trong PowerShell bạn đã chạy docker network create resume-network để bước 6 Deploy bật cả Backend, Frontend, Prometheus và Grafana lên không bị vướng lỗi thiếu network).# ==========================================================
 # Docker Compose - Resume Analyser (Backend + Frontend)
 # Kết nối tới MongoDB đã chạy sẵn trên máy
 # ==========================================================
